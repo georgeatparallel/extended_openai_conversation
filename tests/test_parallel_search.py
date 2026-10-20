@@ -107,14 +107,12 @@ def mcp_http(monkeypatch):
         )
 
     def client(**kwargs):
-        assert kwargs["follow_redirects"] is False
-        assert kwargs["timeout"] > 0
         assert kwargs["headers"] == {"User-Agent": parallel.USER_AGENT}
         instance = original_client(transport=httpx2.MockTransport(handle), **kwargs)
         clients.append(instance)
         return instance
 
-    monkeypatch.setattr(parallel.httpx2, "AsyncClient", client)
+    monkeypatch.setattr(parallel, "create_mcp_http_client", client)
     # Ambient credentials must never reach the anonymous client.
     monkeypatch.setenv("PARALLEL_API_KEY", "must-not-be-sent")
     return requests, clients, state
@@ -222,6 +220,7 @@ async def test_default_conversation_search_fetch_and_followup(
         assert request.headers["user-agent"] == parallel.USER_AGENT
         assert "authorization" not in request.headers
     assert all(c.is_closed for c in mcp_http[1])
+    assert all(not c.follow_redirects and c.timeout.read == 30 for c in mcp_http[1])
 
 
 async def test_interleaved_conversations_retry_quota_and_new_chat(

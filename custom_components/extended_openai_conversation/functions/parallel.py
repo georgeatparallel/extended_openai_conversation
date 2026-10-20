@@ -9,9 +9,9 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 from weakref import ref
 
-import httpx2
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import create_mcp_http_client
 import voluptuous as vol
 
 from homeassistant.core import HomeAssistant
@@ -112,25 +112,26 @@ class ParallelFunction(Function):
         try:
             # No API credentials, cookies, redirects or configurable endpoint.
             # A connection belongs to this call; conversation identity is separate.
-            async with asyncio.timeout(timeout):
-                async with (
-                    httpx2.AsyncClient(
-                        headers={"User-Agent": USER_AGENT},
-                        timeout=timeout,
-                        follow_redirects=False,
-                    ) as client,
-                    streamable_http_client(PARALLEL_URL, http_client=client) as (
-                        read,
-                        write,
-                    ),
-                    ClientSession(read, write, read_timeout_seconds=timeout) as session,
-                ):
-                    await session.initialize()
-                    await session.list_tools()
-                    result = await session.call_tool(name, params)
-                    return result.model_dump(
-                        mode="json", by_alias=True, exclude_none=True
-                    )
+            async with (
+                asyncio.timeout(timeout),
+                create_mcp_http_client(headers={"User-Agent": USER_AGENT}) as client,
+            ):
+                # Use the SDK's HTTP client type across HA's MCP 1.x/2.x versions.
+                client.timeout = timeout
+                client.follow_redirects = False
+                async with streamable_http_client(
+                    PARALLEL_URL, http_client=client
+                ) as streams:
+                    # SDK 1.x also yields a transport session-ID callback. The
+                    # tool's conversation ID is owned by HA, independently of it.
+                    read, write = streams[:2]
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        await session.list_tools()
+                        result = await session.call_tool(name, params)
+                        return result.model_dump(
+                            mode="json", by_alias=True, exclude_none=True
+                        )
         except TimeoutError:
             return {"error": "Parallel web request timed out. Try again later."}
         except Exception:
